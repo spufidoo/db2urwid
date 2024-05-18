@@ -3,19 +3,26 @@
 import sys
 import ibm_db
 import urwid as u
+import logging
+import configparser
+from getpass import getpass
 
-# Define And Initialize The Appropriate Variables
-resultSet = False
-dataRecord = False
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
+
+# Load configuration
+config = configparser.ConfigParser()
+config.read('db_config.ini')
 
 class ListItem(u.WidgetWrap):
-    def __init__ (self, employee):
+    def __init__(self, employee):
         self.content = employee
         EMPNO = employee["EMPNO"]
         t = u.AttrWrap(u.Text(EMPNO), "employee", "employee_selected")
         u.WidgetWrap.__init__(self, t)
 
-    def selectable (self):
+    def selectable(self):
         return True
 
     def keypress(self, size, key):
@@ -32,23 +39,21 @@ class ListView(u.WidgetWrap):
         focus_w, _ = self.walker.get_focus()
         u.emit_signal(self, 'show_details', focus_w.content)
 
-    def set_data(self, countries):
-        countries_widgets = [ListItem(c) for c in countries]
+    def set_data(self, employees):
+        employee_widgets = [ListItem(e) for e in employees]
         u.disconnect_signal(self.walker, 'modified', self.modified)
-        while len(self.walker) > 0:
-            self.walker.pop()
-        self.walker.extend(countries_widgets)
+        self.walker.clear()
+        self.walker.extend(employee_widgets)
         u.connect_signal(self.walker, "modified", self.modified)
         self.walker.set_focus(0)
 
 class DetailView(u.WidgetWrap):
-    def __init__ (self):
+    def __init__(self):
         t = u.Text("")
         u.WidgetWrap.__init__(self, t)
 
     def set_employee(self, c):
         s = f'EMPNO:      {c["EMPNO"]}\nFirst:      {c["FIRSTNME"]}\nInitial:    {c["MIDINIT"]}\nLast:       {c["LASTNAME"]}\nDept:       {c["WORKDEPT"]}\nPhone:      {c["PHONENO"]}\nHired:      {c["HIREDATE"]}\nJob:        {c["JOB"]}\nSex:        {c["SEX"]}\nBirthdate:  {c["BIRTHDATE"]}\nSalary:     {c["SALARY"]}\nBonus:      {c["BONUS"]}\nCommission: {c["COMM"]}\n'
-
         self._w.set_text(s)
 
 class App(object):
@@ -60,12 +65,12 @@ class App(object):
         self.detail_view.set_employee(employee)
 
     def __init__(self):
-        self.palette = {
-            ("bg",               "black",       "white"),
-            ("employee",          "black",       "white"),
-            ("employee_selected", "black",       "yellow"),
-            ("footer",           "white, bold", "dark red")
-        }
+        self.palette = [
+            ("bg", "black", "white"),
+            ("employee", "black", "white"),
+            ("employee_selected", "black", "yellow"),
+            ("footer", "white, bold", "dark red")
+        ]
 
         self.list_view = ListView()
         self.detail_view = DetailView()
@@ -90,71 +95,56 @@ class App(object):
     def connect_to_db(self):
         max_attempts = 3
         attempts = 0
-        database = 'SAMPLE'
-        hostname = 'odin.local'
-        port = '25000'
-        userid = 'db2inst1'
-
-        from getpass import getpass
+        database = config['database']['name']
+        hostname = config['database']['hostname']
+        port = config['database']['port']
+        userid = config['database']['userid']
 
         while attempts < max_attempts:
             password = getpass("Enter password:")
 
             try:
-                conn_str= f"DATABASE={database};HOSTNAME={hostname};PORT={port};PROTOCOL=TCPIP;UID={userid};PWD={password};"
-                conn = ibm_db.connect(conn_str,'','')
+                conn_str = f"DATABASE={database};HOSTNAME={hostname};PORT={port};PROTOCOL=TCPIP;UID={userid};PWD={password};"
+                conn = ibm_db.connect(conn_str, '', '')
+                return conn
             except Exception as e:
                 attempts += 1
                 if ibm_db.conn_error() == "08001":
-                    print (f"Nope. Try again. You have {max_attempts-attempts} attempts left.")
+                    logger.error(f"Nope. Try again. You have {max_attempts - attempts} attempts left.")
                 else:
-                    print(e)
-            else:
-                break
+                    logger.error(f"Connection failed: {e}")
+        logger.critical(f"You tried {attempts} invalid passwords. Bye bye.")
+        sys.exit()
 
-        if attempts == max_attempts:
-            print(f"You tried {attempts} invalid passwords. Bye bye.")
-            exit()
-        return conn
-
-    def update_data(self):
-        l = ([])
+    def update_data(self, search_term=''):
+        employees = []
         conn = self.connect_to_db()
 
-        #sql = "SELECT * FROM DB2INST1.EMP WHERE LASTNAME LIKE 'H%'"
         sql = "SELECT * FROM DB2INST1.EMP"
+        if search_term:
+            sql += f" WHERE LASTNAME LIKE '{search_term}%'"
+
         stmt = ibm_db.exec_immediate(conn, sql)
-        # As Long As There Are Records
-        noData = False
-        loopCounter = 1
-        while noData is False:
 
-            # Retrieve A Record And Store It In A Python Dictionary
-            try:
-                dataRecord = ibm_db.fetch_assoc(stmt)
-            except:
-                dataRecord = False
+        while True:
+            data_record = ibm_db.fetch_assoc(stmt)
+            if not data_record:
+                break
+            employees.append(data_record)
 
-            # If The Data Could Not Be Retrieved Or If There Was No Data To Retrieve, Set The
-            # "No Data" Flag And Exit The Loop
-            if dataRecord is False:
-                noData = True
-
-            # Otherwise, Display The Information Retrieved
-            else:
-                l.append(dataRecord)
-                loopCounter += 1
-
-        # Close The Database Connection That Was Opened Earlier
         ibm_db.close(conn)
+        self.list_view.set_data(employees)
 
-        self.list_view.set_data(l)
-
-    def start(self):
-        self.update_data()
+    def start(self, search_term=''):
+        self.update_data(search_term)
         self.loop.run()
 
 if __name__ == '__main__':
+    import argparse
 
+    parser = argparse.ArgumentParser(description='Employee Viewer')
+    parser.add_argument('--search', type=str, help='Search term for employee last name', default='')
+
+    args = parser.parse_args()
     app = App()
-    app.start()
+    app.start(args.search)
