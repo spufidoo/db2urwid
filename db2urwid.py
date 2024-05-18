@@ -1,6 +1,7 @@
 #! /usr/bin/python3
 
 import sys
+import os
 import ibm_db
 import urwid as u
 import logging
@@ -8,7 +9,17 @@ import configparser
 from getpass import getpass
 
 # Setup logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s')
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+log_file = os.path.join(log_dir, 'app.log')
+
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s', handlers=[
+    logging.FileHandler(log_file)
+    # logging.StreamHandler()
+])
+
 logger = logging.getLogger(__name__)
 
 # Load configuration
