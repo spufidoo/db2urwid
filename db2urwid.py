@@ -1,39 +1,21 @@
 #! /usr/bin/python3
 
 import sys
-import os
 import ibm_db
 import urwid as u
-import logging
-import configparser
-from getpass import getpass
 
-# Setup logging
-log_dir = 'logs'
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-log_file = os.path.join(log_dir, 'app.log')
-
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s', handlers=[
-    logging.FileHandler(log_file)
-    # logging.StreamHandler()
-])
-
-logger = logging.getLogger(__name__)
-
-# Load configuration
-config = configparser.ConfigParser()
-config.read('db_config.ini')
+# Define And Initialize The Appropriate Variables
+resultSet = False
+dataRecord = False
 
 class ListItem(u.WidgetWrap):
-    def __init__(self, employee):
+    def __init__ (self, employee):
         self.content = employee
         EMPNO = employee["EMPNO"]
         t = u.AttrWrap(u.Text(EMPNO), "employee", "employee_selected")
         u.WidgetWrap.__init__(self, t)
 
-    def selectable(self):
+    def selectable (self):
         return True
 
     def keypress(self, size, key):
@@ -50,21 +32,36 @@ class ListView(u.WidgetWrap):
         focus_w, _ = self.walker.get_focus()
         u.emit_signal(self, 'show_details', focus_w.content)
 
-    def set_data(self, employees):
-        employee_widgets = [ListItem(e) for e in employees]
+    def set_data(self, countries):
+        countries_widgets = [ListItem(c) for c in countries]
         u.disconnect_signal(self.walker, 'modified', self.modified)
-        self.walker.clear()
-        self.walker.extend(employee_widgets)
+        while len(self.walker) > 0:
+            self.walker.pop()
+        self.walker.extend(countries_widgets)
         u.connect_signal(self.walker, "modified", self.modified)
         self.walker.set_focus(0)
 
 class DetailView(u.WidgetWrap):
-    def __init__(self):
+    def __init__ (self):
         t = u.Text("")
         u.WidgetWrap.__init__(self, t)
 
     def set_employee(self, c):
-        s = f'EMPNO:      {c["EMPNO"]}\nFirst:      {c["FIRSTNME"]}\nInitial:    {c["MIDINIT"]}\nLast:       {c["LASTNAME"]}\nDept:       {c["WORKDEPT"]}\nPhone:      {c["PHONENO"]}\nHired:      {c["HIREDATE"]}\nJob:        {c["JOB"]}\nSex:        {c["SEX"]}\nBirthdate:  {c["BIRTHDATE"]}\nSalary:     {c["SALARY"]}\nBonus:      {c["BONUS"]}\nCommission: {c["COMM"]}\n'
+        s = (f'EMPNO:      {c["EMPNO"]}\n'
+             f'First:      {c["FIRSTNME"]}\n'
+             f'Initial:    {c["MIDINIT"]}\n'
+             f'Last:       {c["LASTNAME"]}\n'
+             f'Dept:       {c["WORKDEPT"]}\n'
+             f'Phone:      {c["PHONENO"]}\n'
+             f'Hired:      {c["HIREDATE"]}\n'
+             f'Job:        {c["JOB"]}\n'
+             f'Sex:        {c["SEX"]}\n'
+             f'Birthdate:  {c["BIRTHDATE"]}\n'
+             f'Salary:     {c["SALARY"]}\n'
+             f'Bonus:      {c["BONUS"]}\n'
+             f'Commission: {c["COMM"]}\n'
+             f'Edlevel:    {c["EDLEVEL"]}\n')
+
         self._w.set_text(s)
 
 class App(object):
@@ -76,12 +73,12 @@ class App(object):
         self.detail_view.set_employee(employee)
 
     def __init__(self):
-        self.palette = [
-            ("bg", "black", "white"),
-            ("employee", "black", "white"),
-            ("employee_selected", "black", "yellow"),
-            ("footer", "white, bold", "dark red")
-        ]
+        self.palette = {
+            ("bg",                "black",       "white"),
+            ("employee",          "black",       "white"),
+            ("employee_selected", "black",       "yellow"),
+            ("footer",            "white, bold", "dark red")
+        }
 
         self.list_view = ListView()
         self.detail_view = DetailView()
@@ -104,58 +101,137 @@ class App(object):
         self.loop = u.MainLoop(frame, self.palette, unhandled_input=self.unhandled_input)
 
     def connect_to_db(self):
+        """Attempt to establish a connection to the DB2 database with retry logic."""
+        from getpass import getpass
+
         max_attempts = 3
         attempts = 0
-        database = config['database']['name']
-        hostname = config['database']['hostname']
-        port = config['database']['port']
-        userid = config['database']['userid']
+
+        database = 'SAMPLE'
+        hostname = 'odin.local'
+        port = '25000'
+        userid = 'db2inst1'
+
+        while attempts < max_attempts:
+            password = getpass("Enter password: ")
+
+            conn_str = (
+                f"DATABASE={database};"
+                f"HOSTNAME={hostname};"
+                f"PORT={port};"
+                f"PROTOCOL=TCPIP;"
+                f"UID={userid};"
+                f"PWD={password};"
+            )
+
+            try:
+                conn = ibm_db.connect(conn_str, '', '')
+                print("Connected successfully!")
+                return conn  # Return the connection on success
+
+            except Exception as e:
+                error_message = ibm_db.conn_errormsg()
+                error_code = ibm_db.conn_error()
+                sqlcode = self.get_sqlcode_from_error(error_message)
+
+                print(f"\nConnection failed with error code = {error_code} SQLCODE = {sqlcode}:\n{error_message}\nException: {e}\n")
+
+                if error_code == "08001":
+                    attempts += 1
+                    if attempts < max_attempts:
+                        print(f"Invalid credentials. You have {max_attempts - attempts} attempts left.\n")
+                    else:
+                        print("Too many failed attempts. Exiting.")
+                        exit(1)
+                else:
+                    print(f"\nConnection failed with error code = {error_code} SQLCODE = {sqlcode}:\n{error_message}\nException: {e}\n")
+                    exit(1)
+
+        return None  # If the function reaches this point, connection failed.
+
+    def get_sqlcode_from_error(self, error_msg):
+        import re
+        """Extract SQLCODE from ibm_db connection error message."""
+        if not error_msg:
+            return None  # No error message means no SQLCODE
+
+        # Regex to match SQLCODE patterns (e.g., SQL30082N)
+        match = re.search(r"SQL(\d{5})N", error_msg)
+
+        if match:
+            return int(match.group(1))  # Convert to integer for easy handling
+        return None
+
+    def connect_to_db_old(self):
+        max_attempts = 3
+        attempts = 0
+        database = 'SAMPLE'
+        hostname = 'odin.local'
+        port = '25000'
+        userid = 'db2inst1'
+
+        from getpass import getpass
 
         while attempts < max_attempts:
             password = getpass("Enter password:")
 
             try:
-                conn_str = f"DATABASE={database};HOSTNAME={hostname};PORT={port};PROTOCOL=TCPIP;UID={userid};PWD={password};"
-                conn = ibm_db.connect(conn_str, '', '')
-                return conn
+                conn_str= f"DATABASE={database};HOSTNAME={hostname};PORT={port};PROTOCOL=TCPIP;UID={userid};PWD={password};"
+                conn = ibm_db.connect(conn_str,'','')
             except Exception as e:
-                attempts += 1
+                print(f" Borked with: {e}\n Deets: {ibm_db.activeconn_error()}")
                 if ibm_db.conn_error() == "08001":
-                    logger.error(f"Nope. Try again. You have {max_attempts - attempts} attempts left.")
+                    attempts += 1
+                    if attempts < max_attempts:
+                        print (f"Nope. Try again. You have {max_attempts-attempts} attempts left.")
                 else:
-                    logger.error(f"Connection failed: {e}")
-        logger.critical(f"You tried {attempts} invalid passwords. Bye bye.")
-        sys.exit()
+                    print(f" Borked with: {e} {conn_error()}")
+            else:
+                break
 
-    def update_data(self, search_term=''):
-        employees = []
+        if attempts == max_attempts:
+            print(f"You tried {attempts} invalid passwords. Bye bye.")
+            exit()
+        return conn
+
+    def update_data(self):
+        l = ([])
         conn = self.connect_to_db()
 
+        #sql = "SELECT * FROM DB2INST1.EMP WHERE LASTNAME LIKE 'H%'"
         sql = "SELECT * FROM DB2INST1.EMP"
-        if search_term:
-            sql += f" WHERE LASTNAME LIKE '{search_term}%'"
-
         stmt = ibm_db.exec_immediate(conn, sql)
+        # As Long As There Are Records
+        noData = False
+        loopCounter = 1
+        while noData is False:
 
-        while True:
-            data_record = ibm_db.fetch_assoc(stmt)
-            if not data_record:
-                break
-            employees.append(data_record)
+            # Retrieve A Record And Store It In A Python Dictionary
+            try:
+                dataRecord = ibm_db.fetch_assoc(stmt)
+            except:
+                dataRecord = False
 
+            # If The Data Could Not Be Retrieved Or If There Was No Data To Retrieve, Set The
+            # "No Data" Flag And Exit The Loop
+            if dataRecord is False:
+                noData = True
+
+            # Otherwise, Display The Information Retrieved
+            else:
+                l.append(dataRecord)
+                loopCounter += 1
+
+        # Close The Database Connection That Was Opened Earlier
         ibm_db.close(conn)
-        self.list_view.set_data(employees)
 
-    def start(self, search_term=''):
-        self.update_data(search_term)
+        self.list_view.set_data(l)
+
+    def start(self):
+        self.update_data()
         self.loop.run()
 
 if __name__ == '__main__':
-    import argparse
 
-    parser = argparse.ArgumentParser(description='Employee Viewer')
-    parser.add_argument('--search', type=str, help='Search term for employee last name', default='')
-
-    args = parser.parse_args()
     app = App()
-    app.start(args.search)
+    app.start()
